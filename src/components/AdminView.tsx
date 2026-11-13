@@ -1,0 +1,861 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Volume2,
+  Printer,
+  FileSpreadsheet,
+  PlusCircle,
+  LogOut,
+  RotateCcw,
+  Search,
+  Filter,
+  Check,
+  X,
+  FileText,
+  Ticket,
+  Trash2,
+  Calendar,
+  Clock,
+  User,
+  HeartPulse,
+  Power,
+  KeyRound,
+  Building2,
+  Stethoscope,
+  Link2,
+  Copy,
+  Lock,
+  ShieldCheck,
+  Pill,
+} from 'lucide-react';
+import {
+  Patient,
+  PatientStatus,
+  SessionName,
+  ClinicStatus,
+  ExaminationRoom,
+  StaffRole,
+  DoctorAccount,
+} from '../types';
+import { formatDateIndo, calculateAge, exportToCSV, isPatientAssignedToDoctor } from '../utils/helpers';
+import { printTicketDocument, printPrescriptionDocument } from '../utils/ticketPrinter';
+import { speakCallout, playChime } from '../utils/audio';
+import { DEFAULT_CLINIC_ROOMS, getDefaultRoomForPatient } from '../data/constants';
+import { ManageRoomsModal } from './modals/ManageRoomsModal';
+
+interface AdminViewProps {
+  patients: Patient[];
+  clinicStatus: ClinicStatus;
+  clinicRooms?: ExaminationRoom[];
+  staffRole?: StaffRole;
+  loggedInDoctor?: DoctorAccount | null;
+  onAssignRoom?: (patientId: string, roomName: string) => void;
+  onSaveRooms?: (updatedRooms: ExaminationRoom[]) => void;
+  onOpenClinicStatusModal: () => void;
+  onCallPatient: (patient: Patient) => void;
+  onCallNextPatient: () => void;
+  onChangePatientStatus: (patientId: string, status: PatientStatus) => void;
+  onOpenMedicalNotes: (patient: Patient) => void;
+  onOpenTicket: (patient: Patient) => void;
+  onDeletePatient: (patientId: string) => void;
+  onOpenWalkInModal: () => void;
+  onOpenCheckTicket?: () => void;
+  onOpenPrintReport: () => void;
+  onResetDemoData: () => void;
+  onLogout: () => void;
+  onOpenChangeAdminPassword?: () => void;
+  onOpenChangeDoctorPassword?: () => void;
+}
+
+export const AdminView: React.FC<AdminViewProps> = ({
+  patients,
+  clinicStatus,
+  clinicRooms = DEFAULT_CLINIC_ROOMS,
+  staffRole = 'admin',
+  loggedInDoctor = null,
+  onAssignRoom,
+  onSaveRooms,
+  onOpenClinicStatusModal,
+  onCallPatient,
+  onCallNextPatient,
+  onChangePatientStatus,
+  onOpenMedicalNotes,
+  onOpenTicket,
+  onDeletePatient,
+  onOpenWalkInModal,
+  onOpenCheckTicket,
+  onOpenPrintReport,
+  onResetDemoData,
+  onLogout,
+  onOpenChangeAdminPassword,
+  onOpenChangeDoctorPassword,
+}) => {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const isDoctor = staffRole === 'dokter' && Boolean(loggedInDoctor);
+
+  // Room modal state
+  const [isRoomModalOpen, setIsRoomModalOpen] = useState(false);
+  const [copiedLink, setCopiedLink] = useState<'patient' | 'admin' | null>(null);
+
+  const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
+  const patientLink = `${originUrl}/`;
+  const adminLink = `${originUrl}/admin`;
+
+  const handleCopyLink = (type: 'patient' | 'admin') => {
+    const url = type === 'patient' ? patientLink : adminLink;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopiedLink(type);
+        setTimeout(() => setCopiedLink(null), 2000);
+      }).catch(() => {});
+    }
+  };
+
+  // Filters state
+  const [filterSession, setFilterSession] = useState<string>('ALL');
+  const [filterStatus, setFilterStatus] = useState<string>('ALL');
+  const [filterPoly, setFilterPoly] = useState<string>(isDoctor ? 'MY_POLY' : 'ALL');
+  const [filterDateMode, setFilterDateMode] = useState<'today' | 'all'>('today');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  useEffect(() => {
+    setFilterPoly(isDoctor ? 'MY_POLY' : 'ALL');
+  }, [isDoctor, loggedInDoctor?.id]);
+
+  // Scope patients strictly to the logged-in doctor when in Doctor mode
+  const scopedPatients =
+    isDoctor && loggedInDoctor
+      ? patients.filter((p) => isPatientAssignedToDoctor(p, loggedInDoctor))
+      : patients;
+
+  // Filtered list
+  const filteredPatients = scopedPatients.filter((p) => {
+    if (filterDateMode === 'today' && p.visitDate !== todayStr) return false;
+    if (filterSession !== 'ALL' && p.sessionName !== filterSession) return false;
+    if (filterStatus !== 'ALL' && p.status !== filterStatus) return false;
+
+    const effectivePoly = (
+      p.examinedPoly ||
+      p.assignedRoom ||
+      getDefaultRoomForPatient(p.service, p.complaint)
+    ).toLowerCase();
+
+    if (filterPoly === 'MY_POLY' && loggedInDoctor) {
+      const matchMyPoly = loggedInDoctor.assignedPolies.some(
+        (poly) => poly.toLowerCase() === effectivePoly
+      );
+      if (!matchMyPoly) return false;
+    } else if (filterPoly !== 'ALL' && filterPoly !== 'MY_POLY') {
+      if (effectivePoly !== filterPoly.toLowerCase()) return false;
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchName = p.name.toLowerCase().includes(q);
+      const matchCode = p.code.toLowerCase().includes(q);
+      const matchPhone = p.phone.includes(q);
+      const matchRM = (p.noRM || '').toLowerCase().includes(q);
+      if (!matchName && !matchCode && !matchPhone && !matchRM) return false;
+    }
+    return true;
+  });
+
+  // Today specific counts
+  const todayPatients = scopedPatients.filter((p) => p.visitDate === todayStr);
+  const totalToday = todayPatients.length;
+  const sesi1Count = todayPatients.filter((p) => p.sessionName === 'Sesi 1').length;
+  const sesi2Count = todayPatients.filter((p) => p.sessionName === 'Sesi 2').length;
+  const sesi3Count = todayPatients.filter((p) => p.sessionName === 'Sesi 3').length;
+  const completedToday = todayPatients.filter((p) => p.status === 'Selesai').length;
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      {/* Top Admin / Doctor Control Bar */}
+      <div className={`text-white p-6 sm:p-8 rounded-3xl flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 shadow-xl ${
+        isDoctor ? 'bg-gradient-to-br from-teal-950 via-slate-900 to-slate-900' : 'bg-slate-900'
+      }`}>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            {isDoctor && loggedInDoctor ? (
+              <span className="px-3 py-0.5 rounded-full text-[10px] font-extrabold bg-teal-500/20 text-teal-300 border border-teal-400/40 uppercase tracking-widest flex items-center gap-1.5">
+                <Stethoscope className="w-3.5 h-3.5" />
+                <span>Login Dokter: {loggedInDoctor.name}</span>
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-widest">
+                Akses Petugas / Admin
+              </span>
+            )}
+            <span className="text-xs text-slate-400">• Terhubung Real-Time</span>
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-black text-white mt-1.5">
+            {isDoctor
+              ? 'Panel Pemeriksaan & Rekam Medis Dokter'
+              : 'Panel Kelola Antrean & Sesi Jam'}
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-300 mt-1">
+            {isDoctor && loggedInDoctor
+              ? `Poli ditangani: ${loggedInDoctor.assignedPolies.join(' • ')} — Hasil diagnosa & resep rahasia antara Anda dan Pasien.`
+              : 'Atur urutan per Sesi jam & ruangan poli. Catatan hasil diagnosa & resep dirahasiakan khusus untuk Dokter & Pasien.'}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full lg:w-auto">
+          {/* Petugas Admin Only Controls (Hidden for Doctor) */}
+          {!isDoctor && (
+            <>
+              {/* Clinic Open/Closed Toggle Button */}
+              <button
+                onClick={onOpenClinicStatusModal}
+                className={`px-4 py-3 rounded-2xl text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg transition cursor-pointer ${
+                  clinicStatus.isOpen
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                    : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/30 ring-2 ring-rose-400 animate-pulse'
+                }`}
+                title="Klik untuk mengubah status Buka / Tutup Klinik (Tersinkron langsung ke layar pasien)"
+              >
+                <Power className="w-4 h-4" />
+                <span>{clinicStatus.isOpen ? 'Status: BUKA' : 'Status: TUTUP'}</span>
+              </button>
+
+              {/* Call Next Button */}
+              <button
+                onClick={onCallNextPatient}
+                className="flex-1 sm:flex-initial px-4 py-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition cursor-pointer"
+              >
+                <Volume2 className="w-4 h-4" />
+                <span>Panggil Berikutnya</span>
+              </button>
+
+              {/* Quick Register / Walk-in */}
+              <button
+                onClick={onOpenWalkInModal}
+                className="px-3.5 py-3 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+                title="Daftar Pasien Langsung di Tempat"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Walk-In</span>
+              </button>
+
+              {/* Kelola Ruangan & Poli */}
+              <button
+                onClick={() => setIsRoomModalOpen(true)}
+                className="px-3.5 py-3 bg-teal-800 hover:bg-teal-700 text-teal-100 border border-teal-600/60 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+                title="Kelola Ruangan Pemeriksaan, Poli, & Dokter Jaga"
+              >
+                <Building2 className="w-4 h-4 text-teal-300" />
+                <span className="hidden sm:inline">Kelola Ruangan & Poli</span>
+                <span className="sm:hidden">Ruangan</span>
+              </button>
+
+              {/* Print Report */}
+              <button
+                onClick={onOpenPrintReport}
+                className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+                title="Cetak Laporan Rekapitulasi"
+              >
+                <Printer className="w-4 h-4" />
+                <span className="hidden sm:inline">Cetak Laporan</span>
+              </button>
+            </>
+          )}
+
+          {/* Export CSV */}
+          <button
+            onClick={() => exportToCSV(scopedPatients, isDoctor)}
+            className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+            title="Download CSV"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span className="hidden sm:inline">CSV</span>
+          </button>
+
+          {/* Cek Tiket Pasien (Untuk Dokter hanya menampilkan tiket pasien miliknya) */}
+          {onOpenCheckTicket && (
+            <button
+              onClick={onOpenCheckTicket}
+              className="px-3.5 py-3 bg-teal-800 hover:bg-teal-700 text-teal-100 border border-teal-600/60 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+              title={
+                isDoctor && loggedInDoctor
+                  ? `Cek Tiket Pasien Khusus ${loggedInDoctor.name}`
+                  : 'Buka Seluruh Tiket Pasien Terdaftar'
+              }
+            >
+              <Ticket className="w-4 h-4 text-teal-300" />
+              <span className="hidden sm:inline">
+                {isDoctor ? 'Cek Tiket Pasien Saya' : 'Cek Tiket Pasien'}
+              </span>
+              <span className="sm:hidden">Tiket</span>
+            </button>
+          )}
+
+          {/* Change Password (Doctor vs Admin) */}
+          {isDoctor && onOpenChangeDoctorPassword ? (
+            <button
+              onClick={onOpenChangeDoctorPassword}
+              className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-teal-300 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+              title="Ubah Sandi Akun Dokter"
+            >
+              <KeyRound className="w-4 h-4 text-teal-400" />
+              <span className="hidden md:inline">Ubah Sandi Dokter</span>
+            </button>
+          ) : (
+            onOpenChangeAdminPassword && (
+              <button
+                onClick={onOpenChangeAdminPassword}
+                className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+                title="Ubah Sandi Baru Admin"
+              >
+                <KeyRound className="w-4 h-4 text-amber-400" />
+                <span className="hidden md:inline">Ubah Sandi</span>
+              </button>
+            )
+          )}
+
+          {/* Reset Demo Data (Admin Only) */}
+          {!isDoctor && (
+            <button
+              onClick={onResetDemoData}
+              className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-2xl text-xs transition cursor-pointer"
+              title="Reset Contoh Data Antrean"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Logout */}
+          <button
+            onClick={onLogout}
+            className="p-3 bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 rounded-2xl text-xs transition cursor-pointer"
+            title={isDoctor ? 'Keluar dari Sesi Dokter' : 'Keluar dari Admin'}
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Dedicated 2-Link Sharing Bar */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 rounded-xl bg-teal-50 text-teal-700 border border-teal-200 shrink-0">
+            <Link2 className="w-4 h-4" />
+          </div>
+          <div>
+            <p className="text-xs font-extrabold text-slate-900">
+              2 Tampilan Link Terpisah (Pasien & Admin)
+            </p>
+            <p className="text-[11px] text-slate-500">
+              Bagikan link pasien ke pengunjung/WhatsApp. Simpan link admin khusus untuk petugas klinik.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 text-xs">
+          <div className="flex items-center gap-2 bg-teal-50/70 border border-teal-200 rounded-xl px-3 py-1.5">
+            <span className="font-bold text-teal-800 shrink-0">Link Pasien:</span>
+            <code className="text-[11px] text-teal-950 font-mono truncate max-w-[180px] sm:max-w-[220px]">
+              {patientLink}
+            </code>
+            <button
+              type="button"
+              onClick={() => handleCopyLink('patient')}
+              className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-[11px] flex items-center gap-1 transition cursor-pointer shrink-0"
+            >
+              {copiedLink === 'patient' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedLink === 'patient' ? 'Tersalin' : 'Salin'}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 bg-amber-50/70 border border-amber-200 rounded-xl px-3 py-1.5">
+            <span className="font-bold text-amber-900 shrink-0">Link Admin:</span>
+            <code className="text-[11px] text-amber-950 font-mono truncate max-w-[180px] sm:max-w-[220px]">
+              {adminLink}
+            </code>
+            <button
+              type="button"
+              onClick={() => handleCopyLink('admin')}
+              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer shrink-0"
+            >
+              {copiedLink === 'admin' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedLink === 'admin' ? 'Tersalin' : 'Salin'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Admin Stats Row (Per Session Today) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+          <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Total Hari Ini</p>
+          <p className="text-3xl font-black text-slate-900 mt-2">{totalToday}</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">Pasien terdaftar</p>
+        </div>
+
+        <div className="bg-blue-50/60 p-5 rounded-2xl border border-blue-200 shadow-xs">
+          <p className="text-xs text-blue-900 font-bold uppercase tracking-wider">Sesi 1 (Pagi)</p>
+          <p className="text-3xl font-black text-blue-700 mt-2">{sesi1Count}</p>
+          <p className="text-[11px] text-blue-500 mt-0.5">08:00 - 12:00 WIB</p>
+        </div>
+
+        <div className="bg-amber-50/60 p-5 rounded-2xl border border-amber-200 shadow-xs">
+          <p className="text-xs text-amber-900 font-bold uppercase tracking-wider">Sesi 2 (Siang)</p>
+          <p className="text-3xl font-black text-amber-700 mt-2">{sesi2Count}</p>
+          <p className="text-[11px] text-amber-600 mt-0.5">13:00 - 17:00 WIB</p>
+        </div>
+
+        <div className="bg-indigo-50/60 p-5 rounded-2xl border border-indigo-200 shadow-xs">
+          <p className="text-xs text-indigo-900 font-bold uppercase tracking-wider">Sesi 3 (Malam)</p>
+          <p className="text-3xl font-black text-indigo-700 mt-2">{sesi3Count}</p>
+          <p className="text-[11px] text-indigo-500 mt-0.5">18:30 - 21:00 WIB</p>
+        </div>
+
+        <div className="bg-emerald-50/60 p-5 rounded-2xl border border-emerald-200 shadow-xs col-span-2 sm:col-span-1">
+          <p className="text-xs text-emerald-900 font-bold uppercase tracking-wider">Selesai Diperiksa</p>
+          <p className="text-3xl font-black text-emerald-700 mt-2">{completedToday}</p>
+          <p className="text-[11px] text-emerald-600 mt-0.5">Sudah tertangani</p>
+        </div>
+      </div>
+
+      {/* Main Patient Data Table Section */}
+      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-4">
+        {/* Table Filters Toolbar */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+              <User className="text-teal-600 w-5 h-5" />
+              {isDoctor && loggedInDoctor
+                ? `Daftar Pasien Poli (${loggedInDoctor.name})`
+                : 'Daftar Pasien Terdaftar'}
+            </h2>
+            <p className="text-xs text-slate-500">
+              Menampilkan {filteredPatients.length} dari total {scopedPatients.length} data pasien
+              {isDoctor ? ' sesuai poli Anda' : ''}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+            {/* Date Mode Toggle */}
+            <div className="bg-slate-100 p-1 rounded-xl flex text-xs font-bold text-slate-600">
+              <button
+                onClick={() => setFilterDateMode('today')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                  filterDateMode === 'today' ? 'bg-white text-slate-900 shadow-xs' : ''
+                }`}
+              >
+                Hari Ini
+              </button>
+              <button
+                onClick={() => setFilterDateMode('all')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                  filterDateMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : ''
+                }`}
+              >
+                Semua Tanggal
+              </button>
+            </div>
+
+            {/* Poly Filter (Aligned strictly to Doctor's Poli when logged in as Doctor) */}
+            <select
+              value={filterPoly}
+              onChange={(e) => setFilterPoly(e.target.value)}
+              className="px-3 py-2 bg-teal-50 border border-teal-200 rounded-xl text-xs font-bold text-teal-900 outline-none cursor-pointer"
+              title="Filter pasien berdasarkan Poli / Ruangan pemeriksaan"
+            >
+              {isDoctor && loggedInDoctor ? (
+                <>
+                  <option value="MY_POLY">
+                    🩺 Semua Poli Saya ({loggedInDoctor.assignedPolies.length} Ruang)
+                  </option>
+                  {loggedInDoctor.assignedPolies.map((polyName) => (
+                    <option key={polyName} value={polyName}>
+                      {polyName}
+                    </option>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <option value="ALL">Semua Poli / Ruangan</option>
+                  {clinicRooms.map((room) => (
+                    <option key={room.id} value={room.name}>
+                      {room.name}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+
+            {/* Session Filter */}
+            <select
+              value={filterSession}
+              onChange={(e) => setFilterSession(e.target.value)}
+              className="px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none"
+            >
+              <option value="ALL">Semua Sesi</option>
+              <option value="Sesi 1">Sesi 1 (Pagi)</option>
+              <option value="Sesi 2">Sesi 2 (Siang)</option>
+              <option value="Sesi 3">Sesi 3 (Malam)</option>
+            </select>
+
+            {/* Status Filter */}
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none"
+            >
+              <option value="ALL">Semua Status</option>
+              <option value="Menunggu">Menunggu</option>
+              <option value="Dipanggil">Dipanggil</option>
+              <option value="Selesai">Selesai</option>
+              <option value="Batal">Batal</option>
+            </select>
+
+            {/* Search Box */}
+            <div className="relative flex-1 md:w-48">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari Nama / Kode..."
+                className="w-full pl-8 pr-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs outline-none focus:bg-white focus:border-teal-500 transition"
+              />
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+            </div>
+          </div>
+        </div>
+
+        {/* Privacy Notice Banner */}
+        {!isDoctor ? (
+          <div className="p-3 rounded-2xl bg-amber-50/80 border border-amber-200 text-amber-900 text-xs flex items-center gap-2.5">
+            <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              <strong>Privasi Rekam Medis Aktif:</strong> Anda masuk sebagai <strong>Petugas Admin</strong>. Hasil diagnosa, tanda vital, dan resep obat dikunci dan hanya bisa dibuka oleh <strong>Dokter</strong> atau <strong>Pasien</strong> bersangkutan.
+            </span>
+          </div>
+        ) : (
+          loggedInDoctor && (
+            <div className="p-3 rounded-2xl bg-teal-50/80 border border-teal-200 text-teal-900 text-xs flex items-center gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0" />
+              <span>
+                <strong>Mode Rekam Medis Dokter ({loggedInDoctor.name}):</strong> Menampilkan pasien sesuai poli pemeriksaan Anda. Klik tombol <strong>Rekam Medis</strong> untuk mencatat hasil pemeriksaan.
+              </span>
+            </div>
+          )
+        )}
+
+        {/* Patients Table */}
+        <div className="overflow-x-auto rounded-2xl border border-slate-200">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-100 text-slate-600 text-xs uppercase font-extrabold">
+                <th className="p-3.5">No. Antrean</th>
+                <th className="p-3.5">Identitas Pasien</th>
+                <th className="p-3.5">Sesi & Jam</th>
+                <th className="p-3.5">Layanan & Keluhan</th>
+                <th className="p-3.5">Ruangan / Poli</th>
+                <th className="p-3.5">Status</th>
+                <th className="p-3.5 text-center">Aksi Petugas</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
+              {filteredPatients.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-10 text-center text-slate-400 font-medium">
+                    Tidak ada data pendaftaran yang sesuai dengan filter.
+                  </td>
+                </tr>
+              ) : (
+                filteredPatients.map((p) => {
+                  let badge = (
+                    <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-full text-xs font-bold">
+                      Menunggu
+                    </span>
+                  );
+                  if (p.status === 'Dipanggil') {
+                    badge = (
+                      <span className="bg-teal-100 text-teal-800 border border-teal-300 px-2.5 py-1 rounded-full text-xs font-bold animate-pulse">
+                        Dipanggil
+                      </span>
+                    );
+                  } else if (p.status === 'Selesai') {
+                    badge = (
+                      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full text-xs font-bold">
+                        Selesai
+                      </span>
+                    );
+                  } else if (p.status === 'Batal') {
+                    badge = (
+                      <span className="bg-rose-100 text-rose-800 px-2.5 py-1 rounded-full text-xs font-bold">
+                        Batal
+                      </span>
+                    );
+                  }
+
+                  const hasMedicalNotes = Boolean(p.diagnosis || p.prescription);
+                  const suggestedRoom = getDefaultRoomForPatient(p.service, p.complaint);
+                  const currentRoom = p.assignedRoom || suggestedRoom;
+                  const isCustom = p.assignedRoom && p.assignedRoom !== suggestedRoom;
+
+                  return (
+                    <tr
+                      key={p.id}
+                      className={`transition ${
+                        p.status === 'Dipanggil'
+                          ? 'bg-teal-50/70 font-semibold'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      {/* Queue Code & Type */}
+                      <td className="p-3.5">
+                        <span className="font-black text-teal-800 text-base block">{p.code}</span>
+                        <span className="text-[10px] text-slate-500 font-semibold">
+                          {p.patientType === 'Baru' ? 'Pasien Baru' : `Lama (${p.noRM})`}
+                        </span>
+                      </td>
+
+                      {/* Patient Identity */}
+                      <td className="p-3.5">
+                        <p className="font-extrabold text-slate-900">{p.name}</p>
+                        <p className="text-[11px] text-slate-500">
+                          {p.gender} • {calculateAge(p.dob)} • WA: {p.phone}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate max-w-xs">{p.address}</p>
+                      </td>
+
+                      {/* Session & Time Slot */}
+                      <td className="p-3.5">
+                        <p className="font-bold text-slate-900 text-xs">{p.sessionName}</p>
+                        <p className="text-[11px] font-extrabold text-teal-700">
+                          {p.timeSlot} WIB
+                        </p>
+                        <p className="text-[10px] text-slate-400">{formatDateIndo(p.visitDate)}</p>
+                      </td>
+
+                      {/* Service & Complaint & Notes Indicator */}
+                      <td className="p-3.5 max-w-xs">
+                        <p className="font-semibold text-slate-900 text-xs">{p.service}</p>
+                        <p className="text-[11px] text-slate-500 italic truncate" title={p.complaint}>
+                          "{p.complaint}"
+                        </p>
+                        {hasMedicalNotes && (
+                          isDoctor ? (
+                            <div className="mt-1.5 space-y-0.5 bg-emerald-50 border border-emerald-200 p-2 rounded-xl text-[10px]">
+                              <span className="inline-flex items-center gap-1 font-extrabold text-emerald-800">
+                                <HeartPulse className="w-3 h-3" />
+                                <span>Rekam Medis ({p.examinedPoly || currentRoom})</span>
+                              </span>
+                              {p.diagnosis && (
+                                <p className="font-bold text-slate-800 truncate" title={p.diagnosis}>
+                                  Dx: {p.diagnosis}
+                                </p>
+                              )}
+                              {p.examinedByDoctor && (
+                                <p className="text-emerald-700 font-semibold">
+                                  👨‍⚕️ {p.examinedByDoctor}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                              <Lock className="w-3 h-3 text-slate-500" />
+                              <span>Rekam Medis Rahasia (Dokter & Pasien)</span>
+                            </span>
+                          )
+                        )}
+                      </td>
+
+                      {/* Ruangan / Poli Allocation & Smart Suggestion */}
+                      <td className="p-3.5">
+                        <div className="space-y-1.5 min-w-[190px]">
+                          <div className="flex items-center gap-1.5">
+                            <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                            <select
+                              value={currentRoom}
+                              onChange={(e) => {
+                                if (onAssignRoom) {
+                                  onAssignRoom(p.id, e.target.value);
+                                }
+                              }}
+                              className="w-full text-xs font-bold bg-teal-50/80 border border-teal-200 text-teal-900 rounded-xl px-2.5 py-1.5 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                              title="Pilih atau alihkan ruangan periksa pasien"
+                            >
+                              {clinicRooms.map((room) => (
+                                <option key={room.id} value={room.name}>
+                                  {room.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-1 text-[10px]">
+                            {p.status === 'Selesai' && p.examinedPoly ? (
+                              <span className="text-emerald-800 font-bold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-block">
+                                ✓ Diperiksa: {p.examinedPoly}
+                              </span>
+                            ) : isCustom ? (
+                              <button
+                                type="button"
+                                onClick={() => onAssignRoom && onAssignRoom(p.id, suggestedRoom)}
+                                className="bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-bold px-2 py-0.5 rounded-md transition flex items-center gap-1 cursor-pointer"
+                                title={`Keluhan pasien: "${p.complaint}" -> Klik untuk terapkan saran: ${suggestedRoom}`}
+                              >
+                                <span>💡 Saran: {suggestedRoom.replace(/Ruang Periksa \d+ |Ruang /, '').split('(')[0]}</span>
+                              </button>
+                            ) : (
+                              <span className="text-teal-700 font-bold bg-teal-50/70 border border-teal-200/60 px-2 py-0.5 rounded-md inline-block">
+                                ✓ Sesuai poli & keluhan
+                              </span>
+                            )}
+                            {(p.examinedByDoctor || p.doctorName) && (
+                              <span className="text-slate-500 font-medium truncate max-w-[100px]" title={p.examinedByDoctor || p.doctorName}>
+                                👨‍⚕️ {p.examinedByDoctor || p.doctorName}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Status */}
+                      <td className="p-3.5">{badge}</td>
+
+                      {/* Action Controls */}
+                      <td className="p-3.5 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {/* Call / Speak (Excluded for Home Care) */}
+                          {p.service.toLowerCase().includes('home care') ? (
+                            <span
+                              className="px-2 py-1.5 bg-sky-50 text-sky-800 border border-sky-200 text-[10px] font-bold rounded-xl flex items-center justify-center select-none"
+                              title="Layanan Home Care (Kunjungan Rumah) - Petugas datang ke lokasi, tanpa panggilan pengeras suara klinik"
+                            >
+                              Home Care
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => onCallPatient(p)}
+                              title="Panggil Suara Pasien"
+                              className="p-2 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl transition cursor-pointer"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* Complete Check */}
+                          <button
+                            onClick={() => onChangePatientStatus(p.id, 'Selesai')}
+                            title="Tandai Selesai Diperiksa"
+                            className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded-xl transition cursor-pointer"
+                          >
+                            <Check className="w-4 h-4" />
+                          </button>
+
+                          {/* Medical Notes & Prescription (STRICTLY DOCTOR ONLY) */}
+                          {isDoctor ? (
+                            <button
+                              onClick={() => onOpenMedicalNotes(p)}
+                              title="Buka / Isi Rekam Medis & Resep Dokter"
+                              className={`p-2 rounded-xl transition cursor-pointer ${
+                                hasMedicalNotes
+                                  ? 'bg-teal-600 text-white hover:bg-teal-700'
+                                  : 'bg-teal-100 hover:bg-teal-200 text-teal-900'
+                              }`}
+                            >
+                              <FileText className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onOpenMedicalNotes(p)}
+                              title="Rekam medis & resep rahasia — hanya dapat diakses melalui Login Dokter"
+                              className="p-2 rounded-xl bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                            >
+                              <Lock className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* View Ticket */}
+                          <button
+                            onClick={() => onOpenTicket(p)}
+                            title="Lihat Detail Tiket"
+                            className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition cursor-pointer"
+                          >
+                            <Ticket className="w-4 h-4" />
+                          </button>
+
+                          {/* Direct Print Ticket */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              printTicketDocument(p, {
+                                format: isDoctor ? 'standard' : 'thermal',
+                                includeMedicalRecord: isDoctor,
+                              })
+                            }
+                            title="Cetak Langsung Tiket / Struk Antrean"
+                            className="p-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl transition cursor-pointer"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+
+                          {/* Direct Print Prescription (Doctor Only when prescription/diagnosis exists) */}
+                          {isDoctor && (p.prescription || p.diagnosis) && (
+                            <button
+                              type="button"
+                              onClick={() => printPrescriptionDocument(p)}
+                              title="Cetak Resep Dokter"
+                              className="p-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl transition cursor-pointer"
+                            >
+                              <Pill className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* Cancel or Restore */}
+                          {p.status === 'Batal' ? (
+                            <button
+                              onClick={() => onChangePatientStatus(p.id, 'Menunggu')}
+                              title="Kembalikan ke Menunggu"
+                              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition cursor-pointer"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => onChangePatientStatus(p.id, 'Batal')}
+                              title="Batalkan Antrean"
+                              className="p-2 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-xl transition cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* Delete */}
+                          <button
+                            onClick={() => onDeletePatient(p.id)}
+                            title="Hapus Data"
+                            className="p-2 bg-slate-100 hover:bg-rose-100 text-slate-400 hover:text-rose-700 rounded-xl transition cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Modal Kelola Ruangan & Poli (Petugas Admin Only) */}
+      {!isDoctor && (
+        <ManageRoomsModal
+          isOpen={isRoomModalOpen}
+          onClose={() => setIsRoomModalOpen(false)}
+          rooms={clinicRooms}
+          onSaveRooms={(updated) => {
+            if (onSaveRooms) onSaveRooms(updated);
+          }}
+          patients={patients}
+        />
+      )}
+    </div>
+  );
+};

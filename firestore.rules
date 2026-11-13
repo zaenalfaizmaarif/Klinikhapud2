@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Koleksi Pasien: Pendaftaran online mandiri & pemantauan antrean
+    match /patients/{patientId} {
+      allow read: if true;
+      allow create, update: if isValidId(patientId);
+      allow delete: if isValidId(patientId);
+    }
+
+    // Koleksi Ruangan Periksa & Poli Klinik
+    match /rooms/{roomId} {
+      allow read: if true;
+      allow write: if isValidId(roomId);
+    }
+
+    // Pengaturan Operasional Klinik (Status Buka/Tutup & Kredensial Admin)
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isValidId(settingId);
+    }
+
+    // Tes Koneksi Database
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
